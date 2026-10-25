@@ -1,0 +1,26 @@
+name: Compiler Zen Home Glass
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ecran-accueil/source/**'
+      - '.github/workflows/build-zenhome.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Compiler l'APK
+        run: bash ecran-accueil/source/build-ci.sh
+      - name: Garder l'APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZenHome-Glass-apk
+          path: ecran-accueil/source/out/ZenHome-Glass.apk
+          if-no-files-found: error
