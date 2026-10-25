@@ -20,6 +20,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -109,6 +110,14 @@ public class Home extends Activity {
     float density;
     boolean fr;
 
+    // verre liquide + meteo
+    final Glass.Backdrop backdrop = new Glass.Backdrop();
+    LinearLayout weatherCard;
+    final Handler ui = new Handler(Looper.getMainLooper());   // resultats reseau (pas annule par h.removeCallbacksAndMessages)
+    static final long WEATHER_TTL_MS = 30 * 60 * 1000L;
+    boolean weatherBusy = false;
+    String city = "";                                          // ville de la meteo ("" = pas de meteo)
+
     // configuration du dock
     List<String> dockPkgs = new ArrayList<>();
     int layout = 4;               // 4, 6 ou 8 applis
@@ -132,6 +141,7 @@ public class Home extends Activity {
         prefs = getSharedPreferences("zenhome", MODE_PRIVATE);
         android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
         density = Math.max(dm.widthPixels, dm.heightPixels) / 1280f; // maquette sur 1280 unites de large
+        backdrop.setScreen(Math.max(dm.widthPixels, dm.heightPixels), Math.min(dm.widthPixels, dm.heightPixels), dp(200), dp(340));
         try {
             fReg = Typeface.createFromAsset(getAssets(), "Poppins-Regular.ttf");
             fMed = Typeface.createFromAsset(getAssets(), "Poppins-Medium.ttf");
@@ -179,6 +189,17 @@ public class Home extends Activity {
         lpC.setMargins(0, dp(26), dp(56), 0);
         root.addView(cl, lpC);
 
+        // Meteo (carte en verre sous l'horloge) : cachee tant qu'aucune ville n'est reglee
+        weatherCard = new LinearLayout(this);
+        weatherCard.setOrientation(LinearLayout.HORIZONTAL);
+        weatherCard.setGravity(Gravity.CENTER_VERTICAL);
+        weatherCard.setPadding(dp(20), dp(14), dp(20), dp(14));
+        weatherCard.setBackground(new Glass.Panel(weatherCard, backdrop, dp(24), 0x2EFFFFFF, density));
+        weatherCard.setVisibility(View.GONE);
+        FrameLayout.LayoutParams lpW = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
+        lpW.setMargins(0, dp(104), dp(56), 0);
+        root.addView(weatherCard, lpW);
+
         // Indication pendant le deplacement
         hintView = text("", 13, fMed, 0xFFFFFFFF);
         GradientDrawable hb = new GradientDrawable(); hb.setCornerRadius(dp(16)); hb.setColor(0xB3101216);
@@ -194,11 +215,7 @@ public class Home extends Activity {
         dock.setOrientation(LinearLayout.HORIZONTAL);
         dock.setGravity(Gravity.CENTER_VERTICAL);
         dock.setClipChildren(false); dock.setClipToPadding(false);
-        GradientDrawable glass = new GradientDrawable();
-        glass.setCornerRadius(dp(28));
-        glass.setColor(0x38FFFFFF);
-        glass.setStroke(Math.max(1, dp(0.75f)), 0x40FFFFFF);
-        dock.setBackground(glass);
+        dock.setBackground(new Glass.Panel(dock, backdrop, dp(28), 0x2EFFFFFF, density));   // verre liquide
         FrameLayout.LayoutParams lpD = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         lpD.setMargins(0, 0, 0, dp(46));
         root.addView(dock, lpD);
@@ -207,6 +224,7 @@ public class Home extends Activity {
         setContentView(root);
         loadWalls();
         showWall(true);
+        refreshWeather(false);
     }
 
     // =====================================================================
@@ -223,6 +241,13 @@ public class Home extends Activity {
             }
             String lay = setting("zenhome_layout");
             if (lay != null) e.putString("layout", lay.trim());
+            // meteo : zenhome_city (texte) ou zenhome_city_b64 (UTF-8 en base64, pour les accents depuis un PC Windows)
+            String cityB64 = setting("zenhome_city_b64");
+            String cityTxt = setting("zenhome_city");
+            if (cityB64 != null && cityB64.trim().length() > 0) {
+                try { cityTxt = new String(Base64.decode(cityB64.trim(), Base64.DEFAULT), "UTF-8"); } catch (Exception ignored) { }
+            }
+            if (cityTxt != null && !"null".equals(cityTxt)) e.putString("city", cityTxt.trim());
             String d = setting("zenhome_dock");
             if (d != null) {
                 // "auto" : le kit demande le choix automatique des applis
@@ -233,6 +258,7 @@ public class Home extends Activity {
         }
         titleMode = prefs.getString("title_mode", "device");
         titleText = prefs.getString("title", "");
+        city = prefs.getString("city", "");
         try { layout = Integer.parseInt(prefs.getString("layout", "4")); } catch (Exception ex) { layout = 4; }
         if (layout != 6 && layout != 8) layout = 4;
         dockPkgs.clear();
@@ -253,6 +279,7 @@ public class Home extends Activity {
                 .putString("layout", String.valueOf(layout))
                 .putString("title_mode", titleMode)
                 .putString("title", titleText)
+                .putString("city", city)
                 .apply();
     }
 
@@ -494,7 +521,145 @@ public class Home extends Activity {
         if (dockPkgs.size() < layout) { labels.add(t("Ajouter une appli", "Add an app")); actions.add(new Runnable() { public void run() { pickAppToAdd(); } }); }
         labels.add(t("Disposition : ", "Layout: ") + layout + t(" applis", " apps")); actions.add(new Runnable() { public void run() { showLayoutMenu(); } });
         labels.add(t("Modifier le titre", "Change the title")); actions.add(new Runnable() { public void run() { editTitle(); } });
+        labels.add(t("Météo : ", "Weather: ") + (city.isEmpty() ? t("désactivée", "off") : city));
+        actions.add(new Runnable() { public void run() { editCity(); } });
         showMenu(header, labels, actions);
+    }
+
+    void editCity() {
+        final EditText et = new EditText(this);
+        et.setSingleLine(true);
+        et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
+        et.setText(city);
+        et.setHint(t("Ville", "City"));
+        et.setSelection(et.getText().length());
+        FrameLayout box = new FrameLayout(this);
+        box.setPadding(dp(24), dp(8), dp(24), 0);
+        box.addView(et);
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle(t("Ville de la météo", "Weather city"))
+                .setMessage(t("Laissez vide pour masquer la météo.", "Leave empty to hide the weather."))
+                .setView(box)
+                .setPositiveButton(t("Valider", "Save"), new android.content.DialogInterface.OnClickListener() {
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        city = et.getText().toString().trim();
+                        saveConfig(); refreshWeather(true); } })
+                .setNegativeButton(t("Annuler", "Cancel"), null)
+                .setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
+                    public void onDismiss(android.content.DialogInterface d) { focusDock(); } })
+                .show();
+    }
+
+    // =====================================================================
+    // Meteo : ville -> coordonnees (Open-Meteo) -> previsions ; copie gardee pour s'afficher aussi hors ligne
+    void refreshWeather(boolean force) {
+        if (city.isEmpty()) { weatherCard.setVisibility(View.GONE); return; }
+        final String c = city;
+        String cached = prefs.getString("wx_json", null);
+        boolean sameCity = c.equals(prefs.getString("wx_city", ""));
+        long age = System.currentTimeMillis() - prefs.getLong("wx_time", 0);
+        if (cached != null && sameCity) renderWeather(cached); else weatherCard.setVisibility(View.GONE);
+        if (weatherBusy || (!force && cached != null && sameCity && age >= 0 && age < WEATHER_TTL_MS)) return;
+        weatherBusy = true;
+        new Thread(new Runnable() { public void run() {
+            String json = null;
+            boolean notFound = false;
+            try {
+                String lat, lon;
+                if (c.equals(prefs.getString("geo_city", "")) && prefs.getString("geo_lat", null) != null) {
+                    lat = prefs.getString("geo_lat", ""); lon = prefs.getString("geo_lon", "");
+                } else {
+                    String[] g = Weather.geocode(c, fr ? "fr" : "en");
+                    if (g == null) throw new IllegalStateException("not found");
+                    lat = g[1]; lon = g[2];
+                    prefs.edit().putString("geo_city", c).putString("geo_name", g[0]).putString("geo_lat", lat).putString("geo_lon", lon).apply();
+                }
+                json = Weather.fetchForecast(lat, lon);
+                prefs.edit().putString("wx_json", json).putLong("wx_time", System.currentTimeMillis()).putString("wx_city", c).apply();
+            } catch (IllegalStateException e) {
+                notFound = true;
+            } catch (Throwable e) {
+                json = null;
+            }
+            final String fj = json;
+            final boolean nf = notFound;
+            ui.post(new Runnable() { public void run() {
+                weatherBusy = false;
+                if (isDestroyed()) return;
+                if (!c.equals(city)) return;                 // la ville a change entre-temps
+                if (fj != null) renderWeather(fj);
+                else if (nf) { weatherCard.setVisibility(View.GONE); toast(t("Ville introuvable : ", "City not found: ") + c); }
+            } });
+        } }).start();
+    }
+
+    void renderWeather(String json) {
+        Weather.Forecast f = Weather.parse(json);
+        if (f == null) { weatherCard.setVisibility(View.GONE); return; }
+        weatherCard.removeAllViews();
+        String place = placeName();
+
+        // a gauche : temperature actuelle, texte, mini / maxi du jour
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout now = new LinearLayout(this);
+        now.setOrientation(LinearLayout.HORIZONTAL);
+        now.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView ic = new ImageView(this);
+        ic.setImageDrawable(new Weather.Icon(Weather.kind(f.codeNow, f.isDay)));
+        now.addView(ic, new LinearLayout.LayoutParams(dp(50), dp(50)));
+        TextView temp = text(f.tempNow + "°", 40, fLight, 0xFFFFFFFF);
+        temp.setPadding(dp(8), 0, 0, 0);
+        now.addView(temp);
+        left.addView(now);
+        TextView cond = text(Weather.label(f.codeNow, fr), 12, fMed, 0xFFFFFFFF);
+        cond.setPadding(0, dp(4), 0, 0);
+        cond.setSingleLine(true);
+        left.addView(cond);
+        TextView sub = text(f.min[0] + "° / " + f.max[0] + "°  ·  " + place, 11, fReg, 0xCCFFFFFF);
+        sub.setPadding(0, dp(2), 0, 0);
+        sub.setSingleLine(true);
+        sub.setEllipsize(TextUtils.TruncateAt.END);
+        sub.setMaxWidth(dp(200));
+        left.addView(sub);
+        weatherCard.addView(left);
+
+        // a droite : les 3 jours suivants
+        if (f.days > 1) {
+            View sep = new View(this);
+            sep.setBackgroundColor(0x4DFFFFFF);
+            LinearLayout.LayoutParams lpS = new LinearLayout.LayoutParams(dp(1.5f), dp(64));
+            lpS.setMargins(dp(16), 0, dp(6), 0);
+            weatherCard.addView(sep, lpS);
+            for (int i = 1; i < f.days; i++) {
+                LinearLayout col = new LinearLayout(this);
+                col.setOrientation(LinearLayout.VERTICAL);
+                col.setGravity(Gravity.CENTER_HORIZONTAL);
+                col.setPadding(dp(8), 0, dp(8), 0);
+                TextView dn = text(Weather.dayName(f.date[i], Locale.getDefault()), 11, fMed, 0xE6FFFFFF);
+                col.addView(dn);
+                ImageView di = new ImageView(this);
+                di.setImageDrawable(new Weather.Icon(Weather.kind(f.code[i], true)));
+                LinearLayout.LayoutParams lpI = new LinearLayout.LayoutParams(dp(30), dp(30));
+                lpI.setMargins(0, dp(3), 0, dp(3));
+                col.addView(di, lpI);
+                LinearLayout mm = new LinearLayout(this);
+                mm.setOrientation(LinearLayout.HORIZONTAL);
+                TextView hi = text(f.max[i] + "°", 12, fMed, 0xFFFFFFFF);
+                TextView lo = text(" " + f.min[i] + "°", 12, fReg, 0x99FFFFFF);
+                mm.addView(hi); mm.addView(lo);
+                col.addView(mm);
+                weatherCard.addView(col);
+            }
+        }
+        weatherCard.setVisibility(View.VISIBLE);
+        weatherCard.invalidate();
+    }
+
+    /** Nom de la ville tel que renvoye par la recherche (ex. avec les accents), sinon celui saisi. */
+    String placeName() {
+        String n = prefs.getString("geo_name", null);
+        return (n != null && city.equals(prefs.getString("geo_city", ""))) ? n : city;
     }
 
     void showLayoutMenu() {
@@ -666,9 +831,7 @@ public class Home extends Activity {
         ov.setClickable(true);
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable pb = new GradientDrawable(); pb.setCornerRadius(dp(22)); pb.setColor(0xF21C1E24);
-        pb.setStroke(Math.max(1, dp(0.75f)), 0x33FFFFFF);
-        panel.setBackground(pb);
+        panel.setBackground(new Glass.Panel(panel, backdrop, dp(22), 0xB0121418, density));   // verre sombre : texte lisible
         panel.setPadding(dp(14), dp(18), dp(14), dp(14));
         panel.setClipChildren(false); panel.setClipToPadding(false);
         TextView hd = text(header, 16, fMed, 0xFFFFFFFF); hd.setShadowLayer(0, 0, 0, 0);
@@ -705,7 +868,7 @@ public class Home extends Activity {
             Intent q = new Intent(Intent.ACTION_MAIN); q.addCategory(cat);
             for (ResolveInfo ri : pm.queryIntentActivities(q, 0)) {
                 String p = ri.activityInfo.packageName;
-                if (!map.containsKey(p) && !p.equals(getPackageName())) map.put(p, ri);
+                if (!map.containsKey(p) && !p.equals(getPackageName()) && !p.equals("tv.zenhome")) map.put(p, ri);
             }
         }
         List<ResolveInfo> list = new ArrayList<>(map.values());
@@ -996,6 +1159,7 @@ public class Home extends Activity {
         final ImageView cur = aOnTop ? wallA : wallB;
         Bitmap bm = decode(walls.get(wallIdx));
         if (bm == null) return;
+        backdrop.update(bm, instant, FADE_MS);     // copie floutee de cette photo, pour le verre liquide
         Drawable old = next.getDrawable();
         next.setImageBitmap(bm);
         if (old instanceof BitmapDrawable) {
@@ -1039,12 +1203,22 @@ public class Home extends Activity {
         // la configuration a pu changer via le kit pendant que l'accueil etait en fond
         String rev = setting("zenhome_rev");
         if (rev != null && !rev.equals(prefs.getString("rev", null)) && moveIndex < 0 && overlays.isEmpty()) {
-            loadConfig(); applyTitle(); buildDock(0);
+            loadConfig(); applyTitle(); buildDock(0); refreshWeather(true);
+        } else {
+            refreshWeather(false);     // ne recharge que si la derniere meteo a plus de 30 min
         }
         h.removeCallbacksAndMessages(null);
         h.post(tick);
         h.postDelayed(rotate, rotationMs);
+        h.postDelayed(weatherTick, WEATHER_TTL_MS);
     }
+
+    final Runnable weatherTick = new Runnable() {
+        public void run() {
+            refreshWeather(false);
+            h.postDelayed(this, WEATHER_TTL_MS);
+        }
+    };
 
     @Override
     protected void onPause() {

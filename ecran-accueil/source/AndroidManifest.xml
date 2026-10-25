@@ -1,14 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Version « Glass » : identifiant different (tv.zenhome.glass) pour s'installer A COTE de Zen Home d'origine
+     (qui reste en secours) ; les classes restent dans le paquet tv.zenhome. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="tv.zenhome" android:versionCode="7" android:versionName="2.5">
+    package="tv.zenhome.glass" android:versionCode="8" android:versionName="2.6-glass">
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="24" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-    <application android:label="Zen Home" android:icon="@drawable/icon"
+    <application android:label="Zen Home Glass" android:icon="@drawable/icon"
         android:banner="@drawable/banner" android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
-        <activity android:name=".Home" android:launchMode="singleTask" android:stateNotNeeded="true"
+        <activity android:name="tv.zenhome.Home" android:launchMode="singleTask" android:stateNotNeeded="true"
             android:clearTaskOnLaunch="true" android:excludeFromRecents="true"
             android:screenOrientation="landscape"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|uiMode|locale">
@@ -20,7 +23,7 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
-        <service android:name=".KeyService" android:label="@string/keys_label"
+        <service android:name="tv.zenhome.KeyService" android:label="@string/keys_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
